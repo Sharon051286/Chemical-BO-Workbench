@@ -1,0 +1,25 @@
+@import 'tailwindcss';
+@import '../../vendor/livewire/flux/dist/flux.css';
+@custom-variant dark (&:where(.dark, .dark *));
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+@source '../../vendor/livewire/flux/stubs';
+
+@theme {
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+
+    /* Premium EDBO brand palette — drives Flux theming accents */
+    --color-edbo-50: #eef6ff;
+    --color-edbo-100: #d9eaff;
+    --color-edbo-200: #bcd9ff;
+    --color-edbo-300: #8ec1ff;
+    --color-edbo-400: #599eff;
+    --color-edbo-500: #3b82f6;
+    --color-edbo-600: #2563eb;
+    --color-edbo-700: #1d4ed8;
+    --color-edbo-800: #1e40af;
+    --color-edbo-900: #1e3a8a;
+    --color-edbo-950: #172554;
+}

@@ -1,0 +1,74 @@
+# RAGFlow 本地部署（用于「先验数据驱动」模块）
+# 官方仓库：https://github.com/infiniflow/ragflow
+#
+# 启动：在 docker/ragflow 目录下执行
+#   docker compose -f docker-compose.yml up -d
+#
+# 启动后访问 http://localhost:9380 注册账号，
+# 在「头像 → API」页面获取 API Key，填入本项目 .env 的 RAGFLOW_API_KEY，
+# 然后运行 `php artisan ragflow:setup` 自动建库并回填 dataset_id / chat_id。
+#
+# 注意：RAGFlow 依赖 Elasticsearch/OpenSearch 与 MySQL，默认占用较多内存，
+# 生产或低配机器请按需调整 ES 的 JVM 堆大小（见下方 environment）。
+
+services:
+  ragflow:
+    image: infiniflow/ragflow:v0.17.2-slim
+    container_name: ragflow-server
+    ports:
+      - "9380:9380"   # 管理 Web + API
+      - "9382:9382"   # 文件解析引擎（可选）
+    environment:
+      - TZ=Asia/Shanghai
+      - HF_ENDPOINT=https://hf-mirror.com
+      - RAGFLOW_REDIS=redis:6379
+      - RAGFLOW_MYSQL=root:infini_ragflow@mysql:3306
+    depends_on:
+      - mysql
+      - redis
+      - es01
+    volumes:
+      - ./ragflow-logs:/ragflow/logs
+      - ./ragflow-data:/ragflow/data
+    networks:
+      - ragflow
+
+  mysql:
+    image: mysql:8.0.39
+    container_name: ragflow-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=infini_ragflow
+      - MYSQL_DATABASE=rag_flow
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+    networks:
+      - ragflow
+
+  redis:
+    image: redis:7.0.15
+    container_name: ragflow-redis
+    command: redis-server --save 60 1 --maxmemory 128mb
+    networks:
+      - ragflow
+
+  es01:
+    image: elasticsearch:8.11.3
+    container_name: ragflow-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      # 堆大小由 deploy 脚本按本机内存写入 .env（ES_JAVA_OPTS），此处为默认值
+      - "ES_JAVA_OPTS=${ES_JAVA_OPTS:-Xms512m -Xmx512m}"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ./es-data:/usr/share/elasticsearch/data
+    networks:
+      - ragflow
+
+networks:
+  ragflow:
+    driver: bridge

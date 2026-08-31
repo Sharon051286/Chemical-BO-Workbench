@@ -1,0 +1,58 @@
+*.log
+.DS_Store
+.env
+.env.backup
+.env.production
+.phpactor.json
+.phpunit.result.cache
+/.codex
+/.cursor/
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+/auth.json
+/node_modules
+/public/build
+/public/fonts-manifest.dev.json
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/vendor
+
+# Lovable / TanStack frontend
+/frontend/node_modules
+/frontend/dist
+/frontend/.output
+/frontend/.nitro
+/frontend/.tanstack
+_ide_helper.php
+Homestead.json
+Homestead.yaml
+Thumbs.db
+
+# ---- Laravel 编译缓存 ----
+/bootstrap/cache/*.php
+/storage/framework/cache/*.php
+/storage/framework/sessions/*.php
+/storage/framework/views/*.php
+
+# ---- 一次性/调试产物（本地临时测试，无需入库）----
+/test_config.json
+/test_ax_*.json
+/test_ax_output*.json
+/test_ax_wrapper_*.json
+/scripts/_bench_results.json
+/scripts/bench_report.html
+
+# ---- 脚本误建的环境变量名目录（垃圾，不要入库）----
+/%SystemDrive%/
+
+# ---- WorkBuddy agent 内部数据（非应用代码，避免误传 GitHub）----
+/.workbuddy/
+
+# Python
+__pycache__/
+*.py[cod]
