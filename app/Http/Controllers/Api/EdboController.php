@@ -7,6 +7,7 @@ use App\Models\EdboRun;
 use App\Services\EdboService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class EdboController extends Controller
 {
@@ -33,21 +34,23 @@ class EdboController extends Controller
             if (! empty($config['demo_mode'])) {
                 continue;
             }
-            $best = '—';
+            $result = null;
             if ($last->status === 'completed') {
                 try {
                     $result = $edbo->getRunResult($last);
-                    $target = $result['target'] ?? ($config['target'] ?? 'yield');
-                    $bestVal = $result['best'][$target] ?? null;
-                    $best = $bestVal !== null ? $bestVal.' %' : '—';
                 } catch (\Throwable) {
-                    $best = '—';
+                    $result = null;
                 }
             }
 
+            $target = $result['target'] ?? ($config['target'] ?? 'yield');
+            $best = $this->bestLabel($result, $config, $target);
+
+            $pendingNext = $this->pendingRecommendations($result);
             $status = match ($last->status) {
-                'completed' => (! empty($config['demo_mode'])) ? '已完成' : '待录入',
-                'failed' => '已完成',
+                'failed' => '失败',
+                'pending', 'processing' => '运行中',
+                'completed' => $pendingNext > 0 ? '待录入' : '已完成',
                 default => '运行中',
             };
 
@@ -173,7 +176,7 @@ class EdboController extends Controller
             ];
 
             if ($fresh->status === 'completed') {
-                $payload['result'] = $edbo->getRunResult($fresh);
+                $payload['result'] = $this->normalizeResult($edbo->getRunResult($fresh));
                 $log = $previousLog;
                 if (! $demoMode) {
                     if ($isFirstBatch && $csvResults !== []) {
@@ -229,13 +232,45 @@ class EdboController extends Controller
         ];
         if ($run->status === 'completed') {
             try {
-                $payload['result'] = $edbo->getRunResult($run);
+                $payload['result'] = $this->normalizeResult($edbo->getRunResult($run));
             } catch (\RuntimeException $e) {
                 $payload['result_error'] = $e->getMessage();
             }
         }
 
         return response()->json($payload);
+    }
+
+    public function showTask(string $taskUuid, EdboService $edbo): JsonResponse
+    {
+        $run = EdboRun::where('task_uuid', $taskUuid)->orderByDesc('id')->first()
+            ?? EdboRun::where('uuid', $taskUuid)->first();
+        if (! $run) {
+            return response()->json(['ok' => false, 'error' => '课题不存在'], 404);
+        }
+
+        return $this->show($run->uuid, $edbo);
+    }
+
+    public function destroyTask(string $taskUuid): JsonResponse
+    {
+        $runs = EdboRun::where('task_uuid', $taskUuid)->get();
+        if ($runs->isEmpty()) {
+            $runs = EdboRun::where('uuid', $taskUuid)->get();
+        }
+        if ($runs->isEmpty()) {
+            return response()->json(['ok' => false, 'error' => '课题不存在'], 404);
+        }
+
+        $disk = Storage::disk('local');
+        foreach ($runs as $run) {
+            if (is_string($run->result_path) && $run->result_path !== '') {
+                $disk->deleteDirectory(dirname($run->result_path));
+            }
+            $run->delete();
+        }
+
+        return response()->json(['ok' => true, 'deleted' => $runs->count()]);
     }
 
     /**
@@ -549,5 +584,52 @@ class EdboController extends Controller
         }
 
         return $max + 1;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $result
+     */
+    private function pendingRecommendations(?array $result): int
+    {
+        if (! is_array($result)) {
+            return 0;
+        }
+        $rows = $result['predicted_next'] ?? $result['recommended_experiments'] ?? [];
+
+        return is_array($rows) ? count($rows) : 0;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $result
+     * @param  array<string, mixed>  $config
+     */
+    private function bestLabel(?array $result, array $config, string $target): string
+    {
+        $bestVal = $result['best'][$target] ?? null;
+        if ($bestVal === null) {
+            $log = is_array($config['experiment_log'] ?? null) ? $config['experiment_log'] : [];
+            foreach ($log as $row) {
+                if (! is_array($row) || ! isset($row[$target]) || ! is_numeric($row[$target])) {
+                    continue;
+                }
+                $n = $row[$target] + 0;
+                $bestVal = $bestVal === null ? $n : max($bestVal, $n);
+            }
+        }
+
+        return $bestVal !== null ? $bestVal.' %' : '—';
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    private function normalizeResult(array $result): array
+    {
+        if (! isset($result['predicted_next']) && isset($result['recommended_experiments'])) {
+            $result['predicted_next'] = $result['recommended_experiments'];
+        }
+
+        return $result;
     }
 }

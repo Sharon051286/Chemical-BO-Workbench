@@ -24,6 +24,12 @@
     {{-- 单一根包裹：满足 Livewire 全页组件「<body> 仅一个直接子元素」约束 --}}
     <div class="flex min-h-screen flex-col">
 
+        <div class="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+            这是旧版 Livewire 页面。日常请打开
+            <a href="http://127.0.0.1:8080/" class="font-semibold underline">http://127.0.0.1:8080/</a>
+            （左右分栏工作台，分支 current-workbench）。
+        </div>
+
         {{-- 顶部导航：玻璃拟态 --}}
         <header class="sticky top-0 z-50 border-b border-white/40 bg-white/60 backdrop-blur-xl
                        dark:border-white/10 dark:bg-slate-900/60">

@@ -151,15 +151,7 @@ function ModeHeader() {
   return (
     <>
       <span className="text-sm text-muted-foreground">
-        {demoMode ? (
-          <>
-            演示工作区 · 样例数据，与正式课题隔离
-          </>
-        ) : (
-          <>
-            Laravel API <span className="num text-foreground">:8000</span> · 正式工作台
-          </>
-        )}
+        {demoMode ? "演示工作区" : "正式工作台"}
       </span>
       <div className="ml-auto flex items-center gap-2 rounded-md border border-border px-3 py-1.5">
         <span className={`text-xs ${demoMode ? "font-medium text-foreground" : "text-muted-foreground"}`}>演示</span>

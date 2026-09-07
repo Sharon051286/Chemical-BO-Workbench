@@ -30,7 +30,7 @@ export type ApiProject = {
   experiments: number;
   best: string;
   updated: string;
-  status: "运行中" | "待录入" | "已完成";
+  status: "运行中" | "待录入" | "已完成" | "失败";
   latest_uuid: string;
   demo_mode?: boolean;
 };
@@ -54,23 +54,33 @@ export async function fetchProjects(): Promise<ApiProject[]> {
   return data.projects ?? [];
 }
 
+export type RunDetail = {
+  ok: boolean;
+  status: string;
+  uuid?: string;
+  task_uuid?: string;
+  engine?: string;
+  result?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  experiment_log?: Record<string, unknown>[];
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  result_error?: string;
+};
+
+export async function fetchTask(taskUuid: string): Promise<RunDetail> {
+  return request<RunDetail>(`/projects/${encodeURIComponent(taskUuid)}`);
+}
+
+export async function deleteProject(taskUuid: string): Promise<void> {
+  await request<{ ok: boolean }>(`/projects/${encodeURIComponent(taskUuid)}`, { method: "DELETE" });
+}
+
 export async function runOptimize(payload: Record<string, unknown>): Promise<OptimizeResponse> {
   return request<OptimizeResponse>("/optimize", { method: "POST", body: JSON.stringify(payload) });
 }
 
-export async function fetchRun(uuid: string) {
-  return request<{
-    ok: boolean;
-    status: string;
-    uuid?: string;
-    task_uuid?: string;
-    engine?: string;
-    result?: Record<string, unknown>;
-    config?: Record<string, unknown>;
-    experiment_log?: Record<string, unknown>[];
-    started_at?: string | null;
-    finished_at?: string | null;
-    error?: string | null;
-    result_error?: string;
-  }>(`/runs/${uuid}`);
+export async function fetchRun(uuid: string): Promise<RunDetail> {
+  return request<RunDetail>(`/runs/${uuid}`);
 }

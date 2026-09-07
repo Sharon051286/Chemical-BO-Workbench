@@ -1,5 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { Loader2, Save } from "lucide-react";
+import { toast } from "sonner";
 import {
   Area,
   AreaChart,
@@ -17,7 +19,10 @@ import {
   YAxis,
 } from "recharts";
 
+import { InfoHint } from "@/components/info-hint";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -27,8 +32,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { fetchProjects, fetchRun } from "@/lib/api";
+import { fetchProjects, fetchRun, runOptimize } from "@/lib/api";
 import { useAppMode } from "@/lib/app-mode";
+import type { Encoding } from "@/lib/edbo-data";
 import { convergence as demoConv, importance as demoImportance, paretoDominated as demoParetoRest, paretoFront as demoParetoFront, slice as demoSlice } from "@/lib/edbo-data";
 import { buildDemoProjectResult, DEMO_PROJECTS, demoRunConfig } from "@/lib/demo-showcase";
 
@@ -108,6 +114,24 @@ function predColLabel(key: string, target: string): string {
   return key.replaceAll("_", " ");
 }
 
+function stripPredicted(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (k.startsWith("predicted_") || k === "variance") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function paramsFromConfig(parameters: ParamSpec[]) {
+  return parameters.map((p, i) => ({
+    id: `p${i}`,
+    name: String(p.name ?? ""),
+    encoding: (p.encoding === "ohe" || p.encoding === "resolve" ? p.encoding : "numeric") as Encoding,
+    values: Array.isArray(p.values) ? p.values.map(String).join(", ") : String(p.values ?? ""),
+  }));
+}
+
 function pickBestRow(rows: Record<string, unknown>[], target: string): Record<string, unknown> | null {
   let best: Record<string, unknown> | null = null;
   let score = -Infinity;
@@ -154,8 +178,12 @@ function Panel({
 }
 
 function Analysis() {
+  const navigate = useNavigate({ from: "/analysis" });
   const { demoMode } = useAppMode();
   const { uuid: searchUuid } = Route.useSearch();
+  const [observed, setObserved] = useState<Record<string, string>>({});
+  const [observedSecond, setObservedSecond] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
   const [uuid, setUuid] = useState<string | undefined>(searchUuid);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -246,6 +274,11 @@ function Analysis() {
       cancelled = true;
     };
   }, [searchUuid, demoMode]);
+
+  useEffect(() => {
+    setObserved({});
+    setObservedSecond({});
+  }, [uuid]);
 
   const charts = useMemo(() => {
     const target =
@@ -413,7 +446,7 @@ function Analysis() {
     if (!hasRun) return kind === "metric" ? "暂无" : "还没有正式运行，这里先空着。";
     if (!hasResult) return kind === "metric" ? "暂无" : "这次运行没有结果文件，无法填充。";
     if (kind === "best") return "已有运行，但还没有带目标值的实验，因此没有最优组合。";
-    if (kind === "records") return "还没有写入实验记录。若这是首轮推荐，请先回填实测。";
+    if (kind === "records") return "还没有写入实验记录。请在上方「推荐下一批实验」表格填写实测值并保存。";
     return "还没有足够的评估数据来画这张图。";
   };
 
@@ -446,12 +479,108 @@ function Analysis() {
             ? "有运行记录，但读不到结果文件，指标先按空值显示。"
             : "还没有正式运行。跑完后这里会填入最优值、评估次数、域规模和下一批推荐。";
 
+  const extraObjectives = charts.objectives
+    .map((o) => o.name)
+    .filter((n): n is string => Boolean(n) && n !== charts.target);
+
+  const saveMeasurements = async () => {
+    if (demoMode) {
+      toast.message("演示模式不写入实测。请切到正式模式，在推荐表填写后再保存。");
+      return;
+    }
+    const rows = charts.predicted;
+    if (rows.length === 0) {
+      toast.error("没有可回填的推荐实验。");
+      return;
+    }
+    if (rows.some((_, i) => !observed[String(i)]?.trim())) {
+      toast.error(`请为每一条推荐填入实测 ${charts.target}。`);
+      return;
+    }
+    if (extraObjectives.some((name) => rows.some((_, i) => !observedSecond[`${name}:${i}`]?.trim()))) {
+      toast.error("多目标请同时填入各实测指标。");
+      return;
+    }
+    const cfg = runInfo.config ?? {};
+    const parameters = paramsFromConfig(detail.parameters);
+    if (parameters.length === 0 || parameters.some((p) => !p.name || !p.values)) {
+      toast.error("这次运行缺少参数空间配置，无法重新推荐。");
+      return;
+    }
+    const priorResults = rows.map((row, i) => {
+      const next: Record<string, unknown> = {
+        ...stripPredicted(row),
+        [charts.target]: Number(observed[String(i)]),
+      };
+      for (const name of extraObjectives) {
+        next[name] = Number(observedSecond[`${name}:${i}`]);
+      }
+      return next;
+    });
+    const objectives =
+      charts.objectives.length > 0
+        ? charts.objectives
+            .filter((o): o is { name: string; minimize?: boolean } => Boolean(o.name))
+            .map((o) => ({ name: o.name, minimize: Boolean(o.minimize) }))
+        : [{ name: charts.target, minimize: false }];
+
+    setSaving(true);
+    try {
+      const data = await runOptimize({
+        engine: runInfo.engine || cfg.engine || "ax",
+        demo_mode: false,
+        objectives,
+        batch_size: Number(cfg.batch_size ?? result?.batch_size ?? 5) || 5,
+        iterations: Number(cfg.iterations ?? result?.iterations ?? 3) || 3,
+        acquisition: cfg.acquisition_function || "EI",
+        init_method: cfg.init_method || "rand",
+        parameters,
+        project_name: cfg.project_name || meta.title,
+        task_uuid: meta.task,
+        prior_data: "",
+        prior_results: priorResults,
+      });
+      if (!data.ok) {
+        toast.error(data.error || "保存失败");
+        return;
+      }
+      let nextUuid = data.uuid;
+      if (data.result) {
+        toast.success("已保存实测并生成下一批推荐");
+      } else if (data.uuid) {
+        toast.message("已提交，正在生成下一批推荐…");
+        for (let i = 0; i < 90; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const poll = await fetchRun(data.uuid);
+          if (poll.status === "completed" && poll.result) {
+            toast.success("已保存实测并生成下一批推荐");
+            nextUuid = poll.uuid ?? data.uuid;
+            break;
+          }
+          if (poll.status === "failed") {
+            toast.error(poll.error || "重新推荐失败");
+            return;
+          }
+        }
+      }
+      if (nextUuid) {
+        await navigate({ search: { uuid: nextUuid } });
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6 lg:px-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">分析视图</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{headerHint}</p>
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-2xl font-semibold">分析视图</h1>
+            <InfoHint label="分析视图说明">{headerHint}</InfoHint>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="num">
@@ -528,8 +657,10 @@ function Analysis() {
           </div>
 
           <div className="mt-5">
-            <h3 className="text-sm font-semibold">运行结果</h3>
-            <p className="mt-1 text-xs text-muted-foreground">{resultIntro}</p>
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-semibold">运行结果</h3>
+              <InfoHint label="运行结果说明">{resultIntro}</InfoHint>
+            </div>
             <dl className="mt-3 grid grid-cols-3 gap-x-5 gap-y-3 border-t border-border pt-4 text-sm">
               <div>
                 <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -550,22 +681,63 @@ function Analysis() {
 
           {charts.predicted.length > 0 && (
             <div className="mt-5">
-              <h3 className="text-sm font-semibold">推荐下一批实验</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1">
+                  <h3 className="text-sm font-semibold">推荐下一批实验</h3>
+                  <InfoHint label="回填说明">
+                    在右侧「实测」列填入做完实验后的真实结果，再点「保存并重新推荐」。系统会写入本课题并给出下一批条件。
+                  </InfoHint>
+                </div>
+                <Button size="sm" disabled={saving || demoMode || isPending} onClick={() => void saveMeasurements()}>
+                  {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                  {saving ? "保存中…" : "保存并重新推荐"}
+                </Button>
+              </div>
               <div className="mt-2 overflow-x-auto rounded-md border border-border">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-surface/70">
+                      <TableHead className="w-10">#</TableHead>
                       {detail.predKeys.map((key) => (
                         <TableHead key={key}>{predColLabel(key, charts.target)}</TableHead>
+                      ))}
+                      <TableHead className="w-28">实测 {charts.target}</TableHead>
+                      {extraObjectives.map((name) => (
+                        <TableHead key={name} className="w-28">
+                          实测 {name}
+                        </TableHead>
                       ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {charts.predicted.map((row, i) => (
                       <TableRow key={i}>
+                        <TableCell className="num text-muted-foreground">{i + 1}</TableCell>
                         {detail.predKeys.map((key) => (
                           <TableCell key={key} className="num">
                             {cell(row[key])}
+                          </TableCell>
+                        ))}
+                        <TableCell>
+                          <Input
+                            className="num h-8 text-[13px]"
+                            placeholder="填写"
+                            value={observed[String(i)] ?? ""}
+                            onChange={(e) => setObserved((o) => ({ ...o, [String(i)]: e.target.value }))}
+                            disabled={demoMode || saving}
+                          />
+                        </TableCell>
+                        {extraObjectives.map((name) => (
+                          <TableCell key={name}>
+                            <Input
+                              className="num h-8 text-[13px]"
+                              placeholder="填写"
+                              value={observedSecond[`${name}:${i}`] ?? ""}
+                              onChange={(e) =>
+                                setObservedSecond((o) => ({ ...o, [`${name}:${i}`]: e.target.value }))
+                              }
+                              disabled={demoMode || saving}
+                            />
                           </TableCell>
                         ))}
                       </TableRow>

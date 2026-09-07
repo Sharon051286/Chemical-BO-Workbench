@@ -1,0 +1,15 @@
+日常请打开这一页（左右分栏工作台）：
+
+  http://127.0.0.1:8080/
+
+不要用 http://127.0.0.1:8000/ —— 那是旧的 Livewire 页，看起来像「实验空间定义 / 运行记录」。
+
+怎么开
+  双击项目里的「打开正确工作台.bat」
+  （会启动前端 8080 + 接口 8000，并自动打开浏览器）
+
+GitHub 对应分支
+  current-workbench
+  https://github.com/Sharon051286/Chemical-BO/tree/current-workbench
+
+  main 是 8 月 26 日的旧版，不是周二这套界面。

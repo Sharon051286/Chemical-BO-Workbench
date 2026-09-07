@@ -37,16 +37,13 @@ REM --- Self-heal: grant current user full control on storage (best-effort) ---
 REM Fixes the recurring "laravel.log Permission denied" after restarts.
 icacls "%PROJECT_ROOT%storage" /grant "%USERNAME%:(OI)(CI)F" /T >nul 2>&1
 
-echo Starting local web server at %APP_URL%
-echo New UI (Lovable): http://127.0.0.1:8080
-echo Legacy Livewire UI: %APP_URL%
-echo Press Ctrl+C to stop.
+echo Correct page: http://127.0.0.1:8080/
+echo API only (old Livewire): %APP_URL%
+echo Press Ctrl+C to stop the API. Frontend stays on 8080.
 
-REM Open the Lovable React UI (proxies /api to this PHP server)
-start "" /min cmd /c "ping -n 6 127.0.0.1 >nul & cd /d %PROJECT_ROOT%frontend & npm run dev"
-start "" /min cmd /c "ping -n 8 127.0.0.1 >nul & explorer http://127.0.0.1:8080"
-
-pushd "%PROJECT_ROOT%"
-"%PHP_EXEC%" -S 127.0.0.1:8000 -t public server.php
-popd
+REM Keep PHP off 8080, start Vite + API, open the workbench.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%scripts\open-workbench.ps1"
+echo.
+echo Servers are running in the background. Close those windows to stop.
+pause
 endlocal

@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { FlaskConical, LayoutGrid, LineChart, BookOpen, ExternalLink } from "lucide-react";
+import { FlaskConical, LayoutGrid, LineChart, BookOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -77,29 +77,6 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
-          <SidebarGroupLabel>原 Livewire 工作台</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip="完整优化器与先验助手">
-                  <a href="http://127.0.0.1:8000" target="_blank" rel="noreferrer" className="flex items-center gap-2">
-                    <ExternalLink className="size-4" />
-                    {!collapsed && <span>先验助手 / 全功能页</span>}
-                  </a>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton asChild tooltip="原使用指南">
-                  <a href="http://127.0.0.1:8000/docs" target="_blank" rel="noreferrer" className="flex items-center gap-2">
-                    <BookOpen className="size-4" />
-                    {!collapsed && <span>原使用说明</span>}
-                  </a>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

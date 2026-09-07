@@ -1,9 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Play, Plus, Save, Trash2, Info, Download, FilePlus2 } from "lucide-react";
+import { Loader2, Play, Plus, Save, Trash2, Download, FilePlus2 } from "lucide-react";
+import { InfoHint } from "@/components/info-hint";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -42,10 +44,22 @@ import {
   type ParamRow,
 } from "@/lib/edbo-data";
 import { buildDemoShowcase } from "@/lib/demo-showcase";
-import { fetchRun, runOptimize } from "@/lib/api";
+import { fetchRun, fetchTask, runOptimize, type RunDetail } from "@/lib/api";
 import { useAppMode } from "@/lib/app-mode";
+import {
+  UNNAMED,
+  normalizeResult,
+  paramsFromConfig,
+  persistFormalSession,
+  readFormalSession,
+} from "@/lib/run-hydrate";
+
+type Search = { task?: string };
 
 export const Route = createFileRoute("/")({
+  validateSearch: (search: Record<string, unknown>): Search => ({
+    task: typeof search.task === "string" && search.task !== "" ? search.task : undefined,
+  }),
   head: () => ({
     meta: [
       { title: "优化工作台 · EDBO Web" },
@@ -94,7 +108,10 @@ const emptySnap = (name: string): ModeSnap => ({
 });
 
 function Workbench() {
+  const navigate = useNavigate({ from: "/" });
+  const { task: searchTask } = Route.useSearch();
   const { demoMode } = useAppMode();
+  const hydrated = useRef<string | null>(null);
   const [params, setParams] = useState<ParamRow[]>(defaultParams);
   const [engine, setEngine] = useState("ax");
   const [objective, setObjective] = useState("single");
@@ -110,6 +127,9 @@ function Workbench() {
   const [observedSecond, setObservedSecond] = useState<Record<string, string>>({});
   const [projectName, setProjectName] = useState("未命名课题");
   const [running, setRunning] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
+  const [runHint, setRunHint] = useState("正在提交优化任务…");
+  const [elapsed, setElapsed] = useState(0);
   const [taskUuid, setTaskUuid] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
 
@@ -135,7 +155,9 @@ function Workbench() {
 
   const predictedNext = Array.isArray(result?.predicted_next)
     ? (result.predicted_next as Record<string, unknown>[])
-    : [];
+    : Array.isArray(result?.recommended_experiments)
+      ? (result.recommended_experiments as Record<string, unknown>[])
+      : [];
   const paramNames = Array.isArray(result?.parameter_names)
     ? (result.parameter_names as string[])
     : params.map((p) => p.name).filter(Boolean);
@@ -145,8 +167,12 @@ function Workbench() {
     result?.best && typeof result.best === "object" ? (result.best as Record<string, unknown>) : null;
 
   const applyResult = (payload: Record<string, unknown>, nextTask: string | null | undefined) => {
-    setResult(payload);
-    if (!demoMode && nextTask) setTaskUuid(nextTask);
+    const normalized = normalizeResult(payload) ?? payload;
+    setResult(normalized);
+    if (!demoMode && nextTask) {
+      setTaskUuid(nextTask);
+      persistFormalSession(nextTask, projectName);
+    }
     setObserved({});
     setObservedSecond({});
     const nextCount = Array.isArray(payload.predicted_next) ? payload.predicted_next.length : 0;
@@ -210,6 +236,58 @@ function Workbench() {
     }
   };
 
+  const applyTask = (run: RunDetail) => {
+    const cfg = run.config ?? {};
+    const rows = paramsFromConfig(cfg.parameters);
+    if (rows.length) setParams(rows);
+    if (typeof run.engine === "string" && run.engine) setEngine(run.engine);
+    const objs = Array.isArray(cfg.objectives) ? (cfg.objectives as { name?: string }[]) : [];
+    if (objs.length > 1) {
+      setObjective("multi");
+      if (objs[1]?.name) setSecondObjective(objs[1].name);
+    } else {
+      setObjective("single");
+    }
+    if (cfg.batch_size != null) setBatch(String(cfg.batch_size));
+    if (cfg.iterations != null) setRounds(String(cfg.iterations));
+    if (typeof cfg.acquisition_function === "string") setAcquisition(cfg.acquisition_function);
+    if (typeof cfg.init_method === "string") setInitMethod(cfg.init_method);
+    if (typeof cfg.project_name === "string" && cfg.project_name) setProjectName(cfg.project_name);
+    setTaskUuid(run.task_uuid ?? null);
+    setResult(normalizeResult(run.result));
+    setObserved({});
+    setObservedSecond({});
+    persistFormalSession(run.task_uuid ?? null, String(cfg.project_name || projectName));
+  };
+
+  useEffect(() => {
+    if (!running) {
+      setElapsed(0);
+      return;
+    }
+    const timer = window.setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  useEffect(() => {
+    if (demoMode) return;
+    const wanted = searchTask || readFormalSession()?.taskUuid;
+    if (!wanted || hydrated.current === wanted) return;
+    hydrated.current = wanted;
+    void fetchTask(wanted)
+      .then((run) => {
+        applyTask(run);
+        if (!searchTask && run.task_uuid) {
+          void navigate({ search: { task: run.task_uuid }, replace: true });
+        }
+      })
+      .catch(() => {
+        persistFormalSession(null, "");
+        hydrated.current = null;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demoMode, searchTask]);
+
   const prevDemo = useRef(demoMode);
   useEffect(() => {
     if (prevDemo.current === demoMode) return;
@@ -219,6 +297,15 @@ function Workbench() {
   }, [demoMode]);
 
   const submitRun = async (reRecommend: boolean) => {
+    if (!demoMode && !reRecommend && !taskUuid) {
+      const name = projectName.trim();
+      if (!name || name === UNNAMED) {
+        toast.error("请先给课题起个名字，再运行优化。");
+        setOpen(true);
+        return;
+      }
+    }
+
     if (demoMode) {
       const nextRound = reRecommend ? Math.min(2, demoRound + 1) : 0;
       loadDemo(nextRound);
@@ -246,6 +333,8 @@ function Workbench() {
     }
 
     setRunning(true);
+    setRerunning(reRecommend);
+    setRunHint(reRecommend ? "正在根据实测结果重新推荐…" : "正在提交优化任务…");
     try {
       const priorResults = reRecommend
         ? predictedNext.map((row, i) => {
@@ -286,10 +375,15 @@ function Workbench() {
         toast.error(data.error || "运行失败");
         return;
       }
-      if (data.task_uuid) setTaskUuid(data.task_uuid);
+      if (data.task_uuid) {
+        setTaskUuid(data.task_uuid);
+        persistFormalSession(data.task_uuid, projectName);
+        void navigate({ search: { task: data.task_uuid }, replace: true });
+      }
       if (data.result) {
         applyResult(data.result, data.task_uuid);
       } else if (data.uuid) {
+        setRunHint("任务已提交，引擎正在计算下一批条件…");
         toast.message("任务已提交，正在等待结果…");
         for (let i = 0; i < 90; i++) {
           await new Promise((r) => setTimeout(r, 2000));
@@ -308,11 +402,16 @@ function Workbench() {
       toast.error(err instanceof Error ? err.message : "运行失败");
     } finally {
       setRunning(false);
+      setRerunning(false);
     }
   };
 
   const createProject = () => {
-    const name = draftName.trim() || (demoMode ? "Suzuki 偶联演示" : "未命名课题");
+    const name = draftName.trim();
+    if (!name) {
+      toast.error("请填写课题名称。");
+      return;
+    }
     setProjectName(name);
     setEngine(draftEngine);
     setObjective(draftObjective);
@@ -338,6 +437,9 @@ function Workbench() {
     } else {
       setResult(null);
       setTaskUuid(null);
+      persistFormalSession(null, "");
+      hydrated.current = null;
+      void navigate({ search: {}, replace: true });
     }
     toast.success(
       `已新建${demoMode ? "演示" : ""}课题：${name} · ${
@@ -379,13 +481,25 @@ function Workbench() {
     <div className="mx-auto w-full max-w-[1500px] px-4 py-6 lg:px-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">优化工作台</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            当前课题：{projectName} ·{" "}
-            {demoMode
-              ? "演示模式（样例数据）。课题列表与分析视图同步展示演示样例，与正式运行隔离。"
-              : "正式模式（真实参数推荐，课题累积）"}
-          </p>
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-2xl font-semibold">优化工作台</h1>
+            <InfoHint label="工作台说明">
+              {demoMode
+                ? "演示模式展示样例数据，不调用 Python。课题列表与分析视图会同步演示样例，与正式运行隔离。"
+                : "正式模式会调用 Ax/MNL 做真实参数推荐，同一课题的实测结果会累积后再推荐下一批。"}
+            </InfoHint>
+          </div>
+          <Input
+            className="mt-1 h-8 max-w-xs text-sm"
+            value={projectName}
+            placeholder="课题名称"
+            onChange={(e) => setProjectName(e.target.value)}
+          />
+          {taskUuid && !demoMode ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              已绑定课题 <span className="num">{taskUuid.slice(0, 8)}</span>，再次运行会续在这一题上
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary" className="num">
@@ -469,19 +583,35 @@ function Workbench() {
             <Download className="size-4" /> 导出 CSV
           </Button>
           <Button size="sm" disabled={running} onClick={() => void submitRun(false)}>
-            <Play className="size-4" /> {running ? "运行中…" : demoMode ? "载入演示数据" : "运行优化"}
+            {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+            {running ? "运行中…" : demoMode ? "载入演示数据" : "运行优化"}
           </Button>
         </div>
       </div>
 
+      {running && (
+        <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 px-4 py-3">
+          <div className="flex items-start gap-3">
+            <Loader2 className="mt-0.5 size-5 shrink-0 animate-spin text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{runHint}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                已用时 {elapsed} 秒。首轮 Ax 通常需要十几秒到一两分钟，请不要关闭或刷新页面。
+              </p>
+              <Progress value={Math.min(92, 10 + elapsed * 2)} className="mt-3 h-2" />
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
         <section className="panel p-5">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex items-center gap-1">
               <h2 className="text-base font-semibold">参数空间</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                numeric 填区间；ohe / resolve 填逗号分隔候选值（resolve 支持 SMILES 或化合物名）
-              </p>
+              <InfoHint label="参数空间填写说明">
+                数值（numeric）填写下限、上限，例如 80, 160。类别（ohe）或化学描述符（resolve）用英文逗号分隔候选值；resolve 支持 SMILES 或化合物名。
+              </InfoHint>
             </div>
             <Button variant="outline" size="sm" onClick={addParam}>
               <Plus className="size-4" /> 添加参数
@@ -626,7 +756,12 @@ function Workbench() {
           </div>
 
           <div className="mt-4 space-y-1.5">
-            <Label className="text-xs text-muted-foreground">先验实验 CSV（可选，仅首轮提交）</Label>
+            <div className="flex items-center gap-1">
+              <Label className="text-xs text-muted-foreground">先验实验 CSV</Label>
+              <InfoHint label="先验 CSV 说明">
+                {csvHint}。仅首轮提交；正式课题在首轮之后改由实测回填累积，此处会锁定。离散组合数须不少于 批量 ×（迭代 + 1）+ 先验条数，且同一参数组合只推荐一次。
+              </InfoHint>
+            </div>
             <Textarea
               className="num min-h-[88px] text-[12px]"
               placeholder={csvHint}
@@ -634,34 +769,24 @@ function Workbench() {
               onChange={(e) => setPriorCsv(e.target.value)}
               disabled={demoMode || Boolean(taskUuid)}
             />
-            <p className="text-[11px] text-muted-foreground">{csvHint}。正式课题在首轮之后改由实测回填累积，此处会锁定。</p>
-          </div>
-
-          <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-accent/40 p-3 text-xs leading-relaxed text-accent-foreground">
-            <Info className="mt-0.5 size-4 shrink-0" />
-            <p>
-              {demoMode
-                ? "演示模式展示预先设计的高产率样例（约 60–92%）。顶栏切换到正式后才会调用 Python；课题与分析页会跟着切换数据源。"
-                : "正式模式会把同一 task_uuid 的实测结果写入 experiment log，再推荐下一批，且同一参数组合只出现一次。域规模守卫：离散组合数必须 ≥ 批量 ×（迭代 + 1）+ 先验条数。"}
-            </p>
           </div>
         </section>
 
         <section className="panel p-5">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="flex items-center gap-1">
               <h2 className="text-base font-semibold">下一批推荐条件</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
+              <InfoHint label="推荐条件说明">
                 {predictedNext.length > 0
                   ? demoMode
-                    ? "演示样例 · 可点「保存并重新推荐」切换到下一批更好看的条件"
-                    : "回填实测值后点击「保存并重新推荐」，进入下一轮贝叶斯优化"
+                    ? "当前为演示样例。点击「下一批演示」可切换到下一批样例条件。"
+                    : "在表格右侧填写实测值，再点击「保存并重新推荐」，进入下一轮贝叶斯优化。"
                   : result
-                    ? "本次评估已覆盖当前离散域，下面展示模型给出的当前最优条件"
+                    ? "本次评估已覆盖当前离散域，下面展示模型给出的当前最优条件。"
                     : demoMode
-                      ? "点击「载入演示数据」查看样例推荐（不调用引擎）"
-                      : "运行优化后，这里会显示后端返回的下一批实验条件"}
-              </p>
+                      ? "点击「载入演示数据」查看样例推荐，不会调用优化引擎。"
+                      : "点击「运行优化」后，这里会显示后端返回的下一批实验条件。演示请把右上角开关拨到左侧。"}
+              </InfoHint>
             </div>
             <Badge variant="outline" className="num">
               {engineLabel} · {isMulti ? "多目标 Pareto" : "单目标"} · {demoMode ? "演示" : "正式"}
@@ -700,9 +825,19 @@ function Workbench() {
                   <TableRow>
                     <TableCell
                       colSpan={paramNames.length + (isMulti ? 4 : 3)}
-                      className="py-8 text-center text-sm text-muted-foreground"
+                      className="py-10 text-center text-sm text-muted-foreground"
                     >
-                      尚未运行。当前为正式模式：点击「运行优化」会调用 Ax/MNL 做真实参数推荐。演示请把开关拨到左侧。
+                      {running ? (
+                        <div className="flex flex-col items-center gap-3">
+                          <Loader2 className="size-8 animate-spin text-primary" />
+                          <div>
+                            <p className="font-medium text-foreground">正在生成下一批推荐</p>
+                            <p className="mt-1 text-xs">{runHint}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        "尚未运行"
+                      )}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -760,7 +895,8 @@ function Workbench() {
               )}
             </p>
             <Button variant="secondary" disabled={running || predictedNext.length === 0} onClick={() => void submitRun(true)}>
-              <Save className="size-4" /> {demoMode ? "下一批演示" : "保存并重新推荐"}
+              {rerunning ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+              {rerunning ? "重新推荐中…" : demoMode ? "下一批演示" : "保存并重新推荐"}
             </Button>
           </div>
         </section>
